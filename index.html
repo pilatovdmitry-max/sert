@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Инвентаризация — онлайн</title>
+<style>
+  :root{--bg:#f5f6f8;--card:#fff;--line:#e3e6ea;--accent:#2563eb;--muted:#6b7280;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.4 system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:#111}
+  header{position:sticky;top:0;z-index:10;background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  header h1{font-size:16px;margin:0 12px 0 0}
+  input,select,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+  button{cursor:pointer}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.ghost{background:#fff}
+  button.save{background:var(--ok);color:#fff;border-color:var(--ok)}
+  .wrap{padding:12px 16px}
+  .stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;color:var(--muted);font-size:13px}
+  .stats b{color:#111}
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:10px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#fafbfc;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap}
+  th:hover{color:#111}
+  tr:hover td{background:#f8fafc}
+  td.editable{outline:none;background:#fffdf5}
+  td.editable:focus{background:#eff6ff;box-shadow:inset 0 0 0 2px var(--accent)}
+  /* Подсветка новой строки */
+  tr.new-row td{background:#f0fdf4}
+  tr.new-row:hover td{background:#dcfce7}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;white-space:nowrap}
+  .t-nek{background:#fef3c7;color:#92400e}
+  .t-ples{background:#ede9fe;color:#5b21b6}
+  .t-qr{background:#fee2e2;color:#991b1b}
+  .t-other{background:#e5e7eb;color:#374151}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .row-tools{display:flex;gap:6px;flex-wrap:wrap}
+  .row-tools button{padding:2px 8px;font-size:12px}
+  .empty{padding:24px;text-align:center;color:var(--muted)}
+  .status-bar{position:fixed;bottom:0;left:0;right:0;background:#111;color:#fff;padding:8px 16px;font-size:13px;display:none;z-index:20}
+  .status-bar.show{display:block}
+  .status-bar.error{background:var(--bad)}
+  .status-bar.ok{background:var(--ok)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Инвентаризация</h1>
+  <input id="q" placeholder="Поиск по всем полям…" style="min-width:240px">
+  <select id="fCat"><option value="">Все категории проблемы</option></select>
+  <select id="fZone"><option value="">Все артикулы WMS</option></select>
+  <button class="ghost" id="clear">Сбросить</button>
+  <span style="flex:1"></span>
+  <button class="primary" id="add">+ Добавить строку</button>
+  <button class="ghost" id="reload">⟳ Обновить с сервера</button>
+  <button class="ghost" id="csv">Экспорт CSV</button>
+</header>
+
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+  <table id="tbl">
+    <thead><tr id="head"></tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+</div>
+
+<div class="status-bar" id="statusBar"></div>
+<iframe name="hidden_iframe" style="display:none;"></iframe>
+
+<script>
+/* ============================================================
+   НАСТРОЙКА
+   ============================================================ */
+const API_URL = "https://script.google.com/macros/s/AKfycbw-h6v1gyOJ8CRTgvHD7VgG0bsZxjI2Pa3Xcte4CKUxr60WxZuTQqHIiMqQxxPktEIOHA/exec";
+
+/* ---------- КОЛОНКИ ---------- */
+const COLS = [
+  {key:"n", label:"№", type:"num", w:60},
+  {key:"zone", label:"Артикул WMS", w:110},
+  {key:"art", label:"Артикул", w:140},
+  {key:"name", label:"Наименование", w:320},
+  {key:"qty", label:"Кол-во", type:"num", w:80},
+  {key:"batch", label:"ТЕ", w:150},
+  {key:"status", label:"Срок/Статус", w:110},
+  {key:"cell", label:"Ячейка", w:130},
+  {key:"comment", label:"Комментарий", w:220},
+  {key:"problem", label:"Категория проблемы", w:170},
+];
+
+const EDITABLE_KEY = "problem";
+
+const SHEET_KEYS = {
+  n:"№", zone:"Артикул WMS", art:"Артикул", name:"Наименование", qty:"Кол-во",
+  batch:"ТЕ", status:"Срок/Статус", cell:"Ячейка",
+  comment:"Комментарий", problem:"Категория проблемы"
+};
+
+/* ---------- СОСТОЯНИЕ ---------- */
+let data = [];
+let sortKey = null, sortDir = 1;
+let saveTimer = null;
+
+/* ---------- УТИЛИТЫ ---------- */
+function esc(s){ return String(s??"").replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
+function tagClass(p){
+  const s = String(p||"").toLowerCase();
+  if(s.includes("некомплект")) return "t-nek";
+  if(s.includes("плесень")) return "t-ples";
+  if(s.includes("qr")) return "t-qr";
+  return "t-other";
+}
+function showStatus(msg, type){
+  const bar = document.getElementById("statusBar");
+  bar.textContent = msg;
+  bar.className = "status-bar show " + (type||"");
+  clearTimeout(showStatus._t);
+  showStatus._t = setTimeout(()=>{ bar.className = "status-bar"; }, 3000);
+}
+
+/* ============================================================
+   ЧТЕНИЕ / ЗАПИСЬ БЕЗ CORS
+   ============================================================ */
+function loadFromServerJSONP(){
+  return new Promise((resolve, reject)=>{
+    const cbName = "jsonpCallback_" + Date.now() + "_" + Math.floor(Math.random()*10000);
+    const script = document.createElement("script");
+    script.src = API_URL + "?callback=" + cbName;
+
+    window[cbName] = function(res){
+      try{ delete window[cbName]; }catch(e){ window[cbName] = undefined; }
+      if(script.parentNode) script.parentNode.removeChild(script);
+      if(res && res.ok) resolve(res.data);
+      else reject(new Error((res && res.error) || "Ошибка API"));
+    };
+
+    script.onerror = function(){
+      try{ delete window[cbName]; }catch(e){ window[cbName] = undefined; }
+      if(script.parentNode) script.parentNode.removeChild(script);
+      reject(new Error("JSONP запрос не удался"));
+    };
+
+    document.body.appendChild(script);
+  });
+}
+
+function saveViaForm(rows){
+  return new Promise((resolve)=>{
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = API_URL;
+    form.target = "hidden_iframe";
+    form.style.display = "none";
+
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "payload";
+    input.value = JSON.stringify({ action: "saveAll", data: rows });
+    form.appendChild(input);
+
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+
+    setTimeout(()=>resolve({ ok: true }), 1500);
+  });
+}
+
+/* ---------- ПРЕОБРАЗОВАНИЯ ---------- */
+function fromSheet(r){
+  const o = {};
+  for(const [k, v] of Object.entries(SHEET_KEYS)) o[k] = r[v] ?? "";
+  return o;
+}
+function toSheet(r){
+  const o = {};
+  for(const [k, v] of Object.entries(SHEET_KEYS)) o[v] = r[k] ?? "";
+  return o;
+}
+
+/* ---------- ЗАГРУЗКА / СОХРАНЕНИЕ ---------- */
+async function loadFromServer(){
+  showStatus("Загрузка данных…");
+  try{
+    const rows = await loadFromServerJSONP();
+    data = rows.map(fromSheet);
+    fillSelects();
+    render();
+    showStatus("Данные загружены: " + data.length + " строк", "ok");
+  }catch(e){
+    showStatus("Ошибка загрузки: " + e.message, "error");
+    data = [];
+    render();
+  }
+}
+
+/* Автосохранение: работает только для обычных строк (не новых) */
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async ()=>{
+    try{
+      await saveViaForm(data.map(toSheet));
+      showStatus("Отправлено на сервер", "ok");
+    }catch(e){
+      showStatus("Ошибка отправки: " + e.message, "error");
+    }
+  }, 800);
+}
+
+/* Явное сохранение: отправляет всё и снимает флаг _isNew */
+async function saveNow(){
+  clearTimeout(saveTimer);
+  try{
+    await saveViaForm(data.map(toSheet));
+    data.forEach(r => delete r._isNew);   // строки становятся «обычными»
+    render();
+    showStatus("Сохранено на сервер", "ok");
+  }catch(e){
+    showStatus("Ошибка сохранения: " + e.message, "error");
+  }
+}
+
+/* ---------- ФИЛЬТРЫ ---------- */
+const head = document.getElementById("head");
+const body = document.getElementById("body");
+const stats = document.getElementById("stats");
+const q = document.getElementById("q");
+const fCat = document.getElementById("fCat");
+const fZone = document.getElementById("fZone");
+
+function fillSelects(){
+  const cats = [...new Set(data.map(r=>r.problem))].sort();
+  const zones = [...new Set(data.map(r=>r.zone))].sort();
+  fCat.innerHTML = '<option value="">Все категории проблемы</option>' + cats.map(v=>`<option>${esc(v)}</option>`).join("");
+  fZone.innerHTML = '<option value="">Все артикулы WMS</option>' + zones.map(v=>`<option>${esc(v)}</option>`).join("");
+}
+
+function visibleRows(){
+  const term = q.value.trim().toLowerCase();
+  let rows = data.filter(r=>{
+    if(fCat.value && r.problem !== fCat.value) return false;
+    if(fZone.value && r.zone !== fZone.value) return false;
+    if(!term) return true;
+    return COLS.some(c=>String(r[c.key]??"").toLowerCase().includes(term));
+  });
+  if(sortKey){
+    rows = rows.slice().sort((a,b)=>{
+      const A=a[sortKey], B=b[sortKey];
+      const na=parseFloat(String(A).replace(",",".")), nb=parseFloat(String(B).replace(",","."));
+      if(!isNaN(na)&&!isNaN(nb)&&String(A).match(/^-?\d/)) return (na-nb)*sortDir;
+      return String(A??"").localeCompare(String(B??""),"ru")*sortDir;
+    });
+  }
+  return rows;
+}
+
+/* ---------- РЕНДЕР ---------- */
+function buildHead(){
+  head.innerHTML = COLS.map(c=>`<th data-key="${c.key}" style="width:${c.w||120}px">${c.label}${sortKey===c.key?(sortDir>0?" ▲":" ▼"):""}</th>`).join("") + `<th style="width:160px">Действия</th>`;
+}
+
+function render(){
+  buildHead();
+  const rows = visibleRows();
+  body.innerHTML = rows.map(r=>{
+    const idx = data.indexOf(r);
+    const isNewRow = !!r._isNew;
+    return `<tr data-i="${idx}" class="${isNewRow?'new-row':''}">` +
+      COLS.map(c=>{
+        const v = r[c.key] ?? "";
+        const isEditable = isNewRow || c.key === EDITABLE_KEY;
+        const cls = [c.type==="num"?"num":"", isEditable?"editable":""].filter(Boolean).join(" ");
+        const ce = isEditable ? ' contenteditable="true" spellcheck="false"' : '';
+        return `<td class="${cls}" data-k="${c.key}"${ce}>${esc(v)}</td>`;
+      }).join("") +
+      `<td><div class="row-tools">` +
+        (isNewRow ? `<button class="save" title="Сохранить строку">✓ Сохранить</button>` : ``) +
+        `<button class="dup" title="Дублировать">⧉</button>
+         <button class="del" title="Удалить">✕</button>
+       </div></td></tr>`;
+  }).join("") || `<tr><td colspan="${COLS.length+1}" class="empty">Ничего не найдено</td></tr>`;
+
+  body.querySelectorAll("tr[data-i]").forEach(tr=>{
+    const r = data[+tr.dataset.i];
+    const cell = tr.querySelector('td[data-k="problem"]');
+    if(cell && r.problem && r.problem !== "—"){
+      cell.innerHTML = `<span class="tag ${tagClass(r.problem)}">${esc(r.problem)}</span>`;
+    }
+  });
+
+  const totalQty = rows.reduce((s,r)=>s+(parseFloat(String(r.qty).replace(",","."))||0),0);
+  stats.innerHTML = `Показано строк: <b>${rows.length}</b> из <b>${data.length}</b> · Сумма «Кол-во»: <b>${totalQty.toLocaleString("ru")}</b>`;
+}
+
+/* ---------- СОБЫТИЯ ---------- */
+head.addEventListener("click", e=>{
+  const th = e.target.closest("th[data-key]"); if(!th) return;
+  const k = th.dataset.key;
+  if(sortKey===k) sortDir*=-1; else { sortKey=k; sortDir=1; }
+  render();
+});
+
+body.addEventListener("input", e=>{
+  const td = e.target.closest("td[data-k]"); if(!td) return;
+  const tr = td.closest("tr[data-i]"); if(!tr) return;
+  const row = data[+tr.dataset.i];
+  // Новые строки — любые поля; старые — только «Категория проблемы»
+  if(!row._isNew && td.dataset.k !== EDITABLE_KEY) return;
+  row[td.dataset.k] = td.textContent.trim();
+  const totalQty = visibleRows().reduce((s,r)=>s+(parseFloat(String(r.qty).replace(",","."))||0),0);
+  stats.innerHTML = `Показано строк: <b>${visibleRows().length}</b> из <b>${data.length}</b> · Сумма «Кол-во»: <b>${totalQty.toLocaleString("ru")}</b>`;
+  // Автосохранение только для старых строк
+  if(!row._isNew) scheduleSave();
+});
+
+body.addEventListener("keydown", e=>{
+  const td = e.target.closest("td"); if(!td) return;
+  const tr = td.closest("tr[data-i]"); if(!tr) return;
+  const row = data[+tr.dataset.i];
+  if(!row._isNew && td.dataset.k !== EDITABLE_KEY && (e.key === "Enter" || e.key === "F2")){
+    e.preventDefault();
+  }
+});
+
+body.addEventListener("click", e=>{
+  const tr = e.target.closest("tr[data-i]"); if(!tr) return;
+  const i = +tr.dataset.i;
+
+  if(e.target.classList.contains("save")){
+    // Сохраняем строку: отправляем всё, снимаем флаг
+    saveNow();
+    return;
+  }
+  if(e.target.classList.contains("del")){
+    if(confirm("Удалить строку?")){ data.splice(i,1); render(); saveNow(); }
+  }
+  if(e.target.classList.contains("dup")){
+    data.splice(i+1, 0, {...data[i], _isNew: true});
+    render();
+    // не сохраняем автоматически — пользователь сам нажмёт «Сохранить»
+  }
+});
+
+[q,fCat,fZone].forEach(el=>el.addEventListener("input", render));
+document.getElementById("clear").addEventListener("click", ()=>{
+  q.value=""; fCat.value=""; fZone.value=""; sortKey=null; render();
+});
+document.getElementById("add").addEventListener("click", ()=>{
+  const empty = Object.fromEntries(COLS.map(c=>[c.key,""]));
+  empty.n = String(data.length+1);
+  empty._isNew = true;   // новая строка: редактируется полностью
+  data.push(empty); render();
+});
+document.getElementById("reload").addEventListener("click", loadFromServer);
+
+function download(name, content, type){
+  const blob = new Blob([content], {type});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name;
+  a.click(); URL.revokeObjectURL(a.href);
+}
+function toCSV(rows){
+  const esc2 = v => `"${String(v??"").replace(/"/g,'""')}"`;
+  const head2 = COLS.map(c=>esc2(c.label)).join(";");
+  const lines = rows.map(r=>COLS.map(c=>esc2(r[c.key])).join(";"));
+  return "\uFEFF"+[head2,...lines].join("\r\n");
+}
+document.getElementById("csv").addEventListener("click", ()=>{
+  download("inventory.csv", toCSV(visibleRows()), "text/csv;charset=utf-8");
+});
+
+/* ---------- СТАРТ ---------- */
+loadFromServer();
+</script>
+</body>
+</html>
