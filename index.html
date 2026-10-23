@@ -4,10 +4,14 @@
 <meta charset="UTF-8">
 <title>Инвентаризация — онлайн</title>
 <style>
-  :root{--bg:#f5f6f8;--card:#fff;--line:#e3e6ea;--accent:#2563eb;--muted:#6b7280;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e3e6ea; --line-strong:#d1d5db;
+    --accent:#2563eb; --muted:#6b7280; --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+    --head-bg:#eef2f7; --head-text:#374151;
+  }
   *{box-sizing:border-box}
   body{margin:0;font:14px/1.4 system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:#111}
-  header{position:sticky;top:0;z-index:10;background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  header{position:sticky;top:0;z-index:10;background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,.04)}
   header h1{font-size:16px;margin:0 12px 0 0}
   input,select,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
   button{cursor:pointer}
@@ -17,14 +21,19 @@
   .wrap{padding:12px 16px}
   .stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;color:var(--muted);font-size:13px}
   .stats b{color:#111}
-  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:10px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.05)}
-  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-  th{background:#fafbfc;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap}
+  .table-wrap{overflow-x:auto;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+  table{width:100%;border-collapse:collapse;background:var(--card);table-layout:fixed;min-width:1200px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);border-right:1px solid var(--line);text-align:left;vertical-align:top;word-break:break-word}
+  th:last-child,td:last-child{border-right:none}
+  th{background:var(--head-bg);font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--head-text);cursor:pointer;user-select:none;white-space:nowrap;border-bottom:2px solid var(--line-strong)}
   th:hover{color:#111}
-  tr:hover td{background:#f8fafc}
-  td.editable{outline:none;background:#fffdf5}
+  /* Зебра-строки */
+  tbody tr:nth-child(even) td{background:#fafbfc}
+  tbody tr:hover td{background:#f1f5f9}
+  /* Редактируемая колонка */
+  td.editable{outline:none;background:#fffdf5;border-left:3px solid var(--accent)}
   td.editable:focus{background:#eff6ff;box-shadow:inset 0 0 0 2px var(--accent)}
-  /* Подсветка новой строки */
+  /* Новая строка */
   tr.new-row td{background:#f0fdf4}
   tr.new-row:hover td{background:#dcfce7}
   .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;white-space:nowrap}
@@ -36,10 +45,14 @@
   .row-tools{display:flex;gap:6px;flex-wrap:wrap}
   .row-tools button{padding:2px 8px;font-size:12px}
   .empty{padding:24px;text-align:center;color:var(--muted)}
-  .status-bar{position:fixed;bottom:0;left:0;right:0;background:#111;color:#fff;padding:8px 16px;font-size:13px;display:none;z-index:20}
-  .status-bar.show{display:block}
-  .status-bar.error{background:var(--bad)}
-  .status-bar.ok{background:var(--ok)}
+  /* Тост вместо полосы внизу */
+  .toast{position:fixed;right:20px;bottom:20px;background:#111;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.15);opacity:0;transform:translateY(8px);transition:opacity .2s,transform .2s;pointer-events:none;z-index:30}
+  .toast.show{opacity:1;transform:translateY(0)}
+  .toast.error{background:var(--bad)}
+  .toast.ok{background:var(--ok)}
+  /* Подсветка изменённой ячейки */
+  @keyframes flash{0%{background:#bbf7d0}100%{background:transparent}}
+  td.flash{animation:flash 1s ease-out}
 </style>
 </head>
 <body>
@@ -57,13 +70,16 @@
 
 <div class="wrap">
   <div class="stats" id="stats"></div>
-  <table id="tbl">
-    <thead><tr id="head"></tr></thead>
-    <tbody id="body"></tbody>
-  </table>
+  <div class="table-wrap">
+    <table id="tbl">
+      <colgroup id="cols"></colgroup>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="body"></tbody>
+    </table>
+  </div>
 </div>
 
-<div class="status-bar" id="statusBar"></div>
+<div class="toast" id="toast"></div>
 <iframe name="hidden_iframe" style="display:none;"></iframe>
 
 <script>
@@ -108,12 +124,12 @@ function tagClass(p){
   if(s.includes("qr")) return "t-qr";
   return "t-other";
 }
-function showStatus(msg, type){
-  const bar = document.getElementById("statusBar");
-  bar.textContent = msg;
-  bar.className = "status-bar show " + (type||"");
-  clearTimeout(showStatus._t);
-  showStatus._t = setTimeout(()=>{ bar.className = "status-bar"; }, 3000);
+function showToast(msg, type){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast show " + (type||"");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=>{ t.className = "toast"; }, 3000);
 }
 
 /* ============================================================
@@ -178,49 +194,48 @@ function toSheet(r){
 
 /* ---------- ЗАГРУЗКА / СОХРАНЕНИЕ ---------- */
 async function loadFromServer(){
-  showStatus("Загрузка данных…");
+  showToast("Загрузка данных…");
   try{
     const rows = await loadFromServerJSONP();
     data = rows.map(fromSheet);
     fillSelects();
     render();
-    showStatus("Данные загружены: " + data.length + " строк", "ok");
+    showToast("Данные загружены: " + data.length + " строк", "ok");
   }catch(e){
-    showStatus("Ошибка загрузки: " + e.message, "error");
+    showToast("Ошибка загрузки: " + e.message, "error");
     data = [];
     render();
   }
 }
 
-/* Автосохранение: работает только для обычных строк (не новых) */
 function scheduleSave(){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     try{
       await saveViaForm(data.map(toSheet));
-      showStatus("Отправлено на сервер", "ok");
+      showToast("Отправлено на сервер", "ok");
     }catch(e){
-      showStatus("Ошибка отправки: " + e.message, "error");
+      showToast("Ошибка отправки: " + e.message, "error");
     }
   }, 800);
 }
 
-/* Явное сохранение: отправляет всё и снимает флаг _isNew */
 async function saveNow(){
   clearTimeout(saveTimer);
   try{
     await saveViaForm(data.map(toSheet));
-    data.forEach(r => delete r._isNew);   // строки становятся «обычными»
+    data.forEach(r => delete r._isNew);
     render();
-    showStatus("Сохранено на сервер", "ok");
+    showToast("Сохранено на сервер", "ok");
   }catch(e){
-    showStatus("Ошибка сохранения: " + e.message, "error");
+    showToast("Ошибка сохранения: " + e.message, "error");
   }
 }
 
 /* ---------- ФИЛЬТРЫ ---------- */
 const head = document.getElementById("head");
 const body = document.getElementById("body");
+const colsEl = document.getElementById("cols");
 const stats = document.getElementById("stats");
 const q = document.getElementById("q");
 const fCat = document.getElementById("fCat");
@@ -253,11 +268,16 @@ function visibleRows(){
 }
 
 /* ---------- РЕНДЕР ---------- */
+function buildColgroup(){
+  colsEl.innerHTML = COLS.map(c=>`<col style="width:${c.w}px">`).join("") + `<col style="width:160px">`;
+}
+
 function buildHead(){
-  head.innerHTML = COLS.map(c=>`<th data-key="${c.key}" style="width:${c.w||120}px">${c.label}${sortKey===c.key?(sortDir>0?" ▲":" ▼"):""}</th>`).join("") + `<th style="width:160px">Действия</th>`;
+  head.innerHTML = COLS.map(c=>`<th data-key="${c.key}">${c.label}${sortKey===c.key?(sortDir>0?" ▲":" ▼"):""}</th>`).join("") + `<th>Действия</th>`;
 }
 
 function render(){
+  buildColgroup();
   buildHead();
   const rows = visibleRows();
   body.innerHTML = rows.map(r=>{
@@ -302,12 +322,10 @@ body.addEventListener("input", e=>{
   const td = e.target.closest("td[data-k]"); if(!td) return;
   const tr = td.closest("tr[data-i]"); if(!tr) return;
   const row = data[+tr.dataset.i];
-  // Новые строки — любые поля; старые — только «Категория проблемы»
   if(!row._isNew && td.dataset.k !== EDITABLE_KEY) return;
   row[td.dataset.k] = td.textContent.trim();
   const totalQty = visibleRows().reduce((s,r)=>s+(parseFloat(String(r.qty).replace(",","."))||0),0);
   stats.innerHTML = `Показано строк: <b>${visibleRows().length}</b> из <b>${data.length}</b> · Сумма «Кол-во»: <b>${totalQty.toLocaleString("ru")}</b>`;
-  // Автосохранение только для старых строк
   if(!row._isNew) scheduleSave();
 });
 
@@ -323,19 +341,13 @@ body.addEventListener("keydown", e=>{
 body.addEventListener("click", e=>{
   const tr = e.target.closest("tr[data-i]"); if(!tr) return;
   const i = +tr.dataset.i;
-
-  if(e.target.classList.contains("save")){
-    // Сохраняем строку: отправляем всё, снимаем флаг
-    saveNow();
-    return;
-  }
+  if(e.target.classList.contains("save")){ saveNow(); return; }
   if(e.target.classList.contains("del")){
     if(confirm("Удалить строку?")){ data.splice(i,1); render(); saveNow(); }
   }
   if(e.target.classList.contains("dup")){
     data.splice(i+1, 0, {...data[i], _isNew: true});
     render();
-    // не сохраняем автоматически — пользователь сам нажмёт «Сохранить»
   }
 });
 
@@ -346,7 +358,7 @@ document.getElementById("clear").addEventListener("click", ()=>{
 document.getElementById("add").addEventListener("click", ()=>{
   const empty = Object.fromEntries(COLS.map(c=>[c.key,""]));
   empty.n = String(data.length+1);
-  empty._isNew = true;   // новая строка: редактируется полностью
+  empty._isNew = true;
   data.push(empty); render();
 });
 document.getElementById("reload").addEventListener("click", loadFromServer);
@@ -370,5 +382,7 @@ document.getElementById("csv").addEventListener("click", ()=>{
 /* ---------- СТАРТ ---------- */
 loadFromServer();
 </script>
+</body>
+</html>
 </body>
 </html>
